@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import logging
 
+logger = logging.getLogger(__name__)
+
 # LSTM Dependencies (with fallback)
 try:
     import torch
@@ -17,8 +19,6 @@ try:
 except ImportError:
     logger.warning("PyTorch not available - LSTM features disabled")
     TORCH_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
 
 class TrendReversalDetector:
     """Advanced trend reversal detection using multiple indicators."""
@@ -526,7 +526,7 @@ class TrendReversalDetector:
             return {'chandelier_signal': 'HOLD', 'confidence': 0.0, 'error': str(e)}
 
     # LSTM Methods for Volatility Prediction
-    def train_vol_predictor(self, symbol: str, periods: int = 1000):
+    async def train_vol_predictor(self, symbol: str, periods: int = 1000):
         """Train LSTM model for volatility prediction."""
         if not TORCH_AVAILABLE:
             logger.warning("PyTorch not available - skipping LSTM training")
@@ -628,14 +628,23 @@ class TrendReversalDetector:
             return 0.001
 
 
-class VolLSTM(nn.Module):
-    """LSTM model for volatility prediction."""
+if TORCH_AVAILABLE:
+    class VolLSTM(nn.Module):
+        """LSTM model for volatility prediction."""
 
-    def __init__(self, input_size=6, hidden_size=64, num_layers=2):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)  # Predict next volatility
+        def __init__(self, input_size=6, hidden_size=64, num_layers=2):
+            super().__init__()
+            self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+            self.fc = nn.Linear(hidden_size, 1)  # Predict next volatility
 
-    def forward(self, x):
-        _, (hn, _) = self.lstm(x)
-        return self.fc(hn[-1])
+        def forward(self, x):
+            _, (hn, _) = self.lstm(x)
+            return self.fc(hn[-1])
+else:
+    class VolLSTM:
+        """Placeholder LSTM class when PyTorch is not available."""
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def forward(self, x):
+            return None

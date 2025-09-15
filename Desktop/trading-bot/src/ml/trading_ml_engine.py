@@ -9,21 +9,22 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import logging
 
+logger = logging.getLogger(__name__)
+
 from src.data.market_data import MarketDataManager
 from src.analysis.technical import TechnicalAnalyzer
 
 # RL Dependencies (with fallback)
 try:
+    # Import gymnasium first to avoid gym warnings
+    import gymnasium as gym
+    from gymnasium import spaces
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv
-    import gym
-    from gym import spaces
     RL_AVAILABLE = True
 except ImportError:
     logger.warning("Stable-Baselines3 not available - RL features disabled")
     RL_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
 
 class TradingMLEngine:
     """Advanced ML engine for trading analysis and continuous improvement."""
@@ -52,18 +53,25 @@ class TradingMLEngine:
     def perform_daily_analysis(self, trading_day_data: Dict) -> Dict:
         """Perform comprehensive daily analysis during US-Japan market gap with REAL ML."""
         logger.info("🧠 STARTING REAL DAILY ML ANALYSIS...")
-        
+
         try:
             from src.ml.trade_analyzer import TradeAnalyzer
             real_analyzer = TradeAnalyzer()
-            
+
             executed_trades = trading_day_data.get('executed_trades', [])
             if len(executed_trades) < self.min_trades_for_analysis:
                 try:
+                    # Ensure file exists
+                    if not self.trade_performance_file.exists():
+                        logger.warning("Creating empty trade_performance.json")
+                        self.trade_performance_file.parent.mkdir(exist_ok=True)
+                        with self.trade_performance_file.open('w') as f:
+                            json.dump([], f)
                     historical_trades = pd.read_json(self.trade_performance_file).to_dict('records')
                     executed_trades.extend(historical_trades[:self.min_trades_for_analysis - len(executed_trades)])
                 except Exception as e:
                     logger.warning(f"Failed to load historical trades: {e}")
+                    executed_trades.extend([{}] * (self.min_trades_for_analysis - len(executed_trades)))  # Fallback to dummy trades
             
             for trade in executed_trades:
                 # Add required ML features with real data
@@ -286,9 +294,9 @@ class TradingMLEngine:
             def __init__(self, backtest_manager):
                 super().__init__()
                 # State: 5 features (RSI, volatility, confidence, correlation, sentiment)
-                self.observation_space = spaces.Box(low=-2, high=2, shape=(5,), dtype=np.float32)
+                self.observation_space = gym.spaces.Box(low=-2, high=2, shape=(5,), dtype=np.float32)
                 # Actions: deltas for min_confidence, min_rr_ratio, atr_multiplier_normal_vol
-                self.action_space = spaces.Box(low=-0.1, high=0.1, shape=(3,), dtype=np.float32)
+                self.action_space = gym.spaces.Box(low=-0.1, high=0.1, shape=(3,), dtype=np.float32)
 
                 self.backtest_manager = backtest_manager
                 self.current_step = 0

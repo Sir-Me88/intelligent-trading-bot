@@ -39,7 +39,17 @@ class CorrelationAnalyzer:
                         df["timestamp"] = df["time"]
                     elif "timestamp" not in df.columns and df.index.dtype != object:
                         df = df.reset_index().rename(columns={"index": "timestamp"})
-                    series = pd.Series(df["close"].values, index=pd.to_datetime(df["timestamp"]))
+                    elif df.index.name == "time":
+                        # Handle case where time is the index
+                        df = df.reset_index()
+                        df["timestamp"] = df["time"]
+
+                    # Create series with proper datetime index
+                    if "timestamp" in df.columns:
+                        series = pd.Series(df["close"].values, index=pd.to_datetime(df["timestamp"]))
+                    else:
+                        # Fallback: use the index if it's datetime-like
+                        series = pd.Series(df["close"].values, index=pd.to_datetime(df.index))
                     series.name = pair
                     return pair, series
                 except Exception as e:

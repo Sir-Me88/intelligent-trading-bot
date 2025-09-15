@@ -1,9 +1,11 @@
-"""Structured logging configuration."""
+"""Structured logging configuration with improved exception handling."""
 
 import logging
 import logging.config
 import json
 import sys
+import traceback
+import uuid
 from datetime import datetime
 from typing import Dict, Any
 
@@ -11,10 +13,10 @@ from ..config.settings import settings
 
 
 class JSONFormatter(logging.Formatter):
-    """JSON formatter for structured logging."""
-    
+    """JSON formatter for structured logging with full exception traces."""
+
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record as JSON."""
+        """Format log record as JSON with full exception details."""
         log_entry = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'level': record.levelname,
@@ -22,13 +24,18 @@ class JSONFormatter(logging.Formatter):
             'message': record.getMessage(),
             'module': record.module,
             'function': record.funcName,
-            'line': record.lineno
+            'line': record.lineno,
+            'trace_id': str(uuid.uuid4())  # Add unique trace ID
         }
-        
-        # Add exception info if present
+
+        # Add full exception info if present
         if record.exc_info:
-            log_entry['exception'] = self.formatException(record.exc_info)
-        
+            log_entry['exception'] = {
+                'type': record.exc_info[0].__name__ if record.exc_info[0] else 'Unknown',
+                'message': str(record.exc_info[1]) if record.exc_info[1] else 'Unknown error',
+                'traceback': ''.join(traceback.format_exception(*record.exc_info))
+            }
+
         # Add extra fields
         for key, value in record.__dict__.items():
             if key not in ['name', 'msg', 'args', 'levelname', 'levelno', 'pathname',
@@ -37,30 +44,30 @@ class JSONFormatter(logging.Formatter):
                           'processName', 'process', 'getMessage', 'exc_info',
                           'exc_text', 'stack_info']:
                 log_entry[key] = value
-        
+
         return json.dumps(log_entry, default=str)
 
 
 class TradingLoggerAdapter(logging.LoggerAdapter):
     """Logger adapter for trading-specific context."""
-    
+
     def process(self, msg: str, kwargs: Dict[str, Any]) -> tuple:
         """Add trading context to log messages."""
         extra = kwargs.get('extra', {})
-        
+
         # Add default trading context
         extra.update({
             'component': 'trading_bot',
-            'environment': settings.environment
+            'environment': 'production' if hasattr(settings, 'backtest_mode') and not settings.backtest_mode else 'development'
         })
-        
+
         kwargs['extra'] = extra
         return msg, kwargs
 
 
-def setup_logging():
+def setup_logging(log_level: str = 'INFO'):
     """Setup structured logging configuration."""
-    
+
     config = {
         'version': 1,
         'disable_existing_loggers': False,
@@ -75,13 +82,13 @@ def setup_logging():
         'handlers': {
             'console': {
                 'class': 'logging.StreamHandler',
-                'level': settings.log_level,
-                'formatter': 'json' if settings.environment == 'production' else 'standard',
+                'level': log_level,
+                'formatter': 'standard',  # Use standard format for console
                 'stream': sys.stdout
             },
             'file': {
                 'class': 'logging.handlers.RotatingFileHandler',
-                'level': settings.log_level,
+                'level': log_level,
                 'formatter': 'json',
                 'filename': 'logs/forex_bot.log',
                 'maxBytes': 10485760,  # 10MB
@@ -90,7 +97,7 @@ def setup_logging():
         },
         'loggers': {
             'forex_bot': {
-                'level': settings.log_level,
+                'level': log_level,
                 'handlers': ['console', 'file'],
                 'propagate': False
             },
@@ -110,11 +117,11 @@ def setup_logging():
             'handlers': ['console']
         }
     }
-    
+
     # Create logs directory if it doesn't exist
     import os
     os.makedirs('logs', exist_ok=True)
-    
+
     logging.config.dictConfig(config)
 
 
@@ -194,4 +201,3 @@ def log_risk_check(pair: str, approved: bool, reason: str,
     }
     
     logger.info("Risk check completed", extra=risk_data)
-

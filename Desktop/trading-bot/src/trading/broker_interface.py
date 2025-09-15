@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Enhanced MT5 broker interface for production trading."""
+"""Enhanced MT5 broker interface with proper async handling."""
 
 import MetaTrader5 as mt5
 from typing import Dict, List, Optional
 import logging
 import asyncio
 import os
+import concurrent.futures
 from datetime import datetime
 from enum import Enum
 
@@ -18,20 +19,30 @@ class OrderResult(Enum):
     REJECTED = "REJECTED"
 
 class EnhancedMT5BrokerInterface:
-    """Enhanced MT5 broker interface with retry logic and robust error handling."""
-    
+    """Enhanced MT5 broker interface with proper async handling using thread pools."""
+
     def __init__(self):
         self.mt5 = mt5
         self.connected = False
         self.initialized = False
         self.max_retries = 3
         self.retry_delay = 5
-        self.max_spread_pips = 15
+        self.max_spread_pips = 20  # Balanced spread limit for quality trades
         self.max_deviation = 5
-        
-        self.login = os.getenv('MT5_LOGIN')
-        self.password = os.getenv('MT5_PASSWORD')
-        self.server = os.getenv('MT5_SERVER')
+
+        # Thread pool for async MT5 calls
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+        # Get MT5 credentials from settings
+        from src.config.settings import settings
+        self.login = settings.mt5_login
+        self.password = settings.mt5_password
+        self.server = settings.mt5_server
+
+    def __del__(self):
+        """Cleanup thread pool on destruction."""
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=False)
     
     async def initialize(self) -> bool:
         """Initialize the broker interface."""
@@ -93,9 +104,11 @@ class EnhancedMT5BrokerInterface:
         return False
     
     async def get_account_info(self) -> Dict:
-        """Get account information."""
+        """Get account information using thread pool."""
         try:
-            account_info = self.mt5.account_info()
+            loop = asyncio.get_event_loop()
+            account_info = await loop.run_in_executor(self.executor, self.mt5.account_info)
+
             if account_info is None:
                 raise ValueError("Failed to get account info")
             return {
@@ -107,11 +120,13 @@ class EnhancedMT5BrokerInterface:
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
             return {'balance': 0.0, 'equity': 0.0, 'margin': 0.0, 'margin_free': 0.0}
-    
+
     async def get_positions(self) -> List[Dict]:
-        """Get open positions."""
+        """Get open positions using thread pool."""
         try:
-            positions = self.mt5.positions_get()
+            loop = asyncio.get_event_loop()
+            positions = await loop.run_in_executor(self.executor, self.mt5.positions_get)
+
             if positions is None:
                 raise ValueError("Failed to get positions")
             return [{
@@ -131,12 +146,15 @@ class EnhancedMT5BrokerInterface:
     
     async def place_order(self, symbol: str, order_type: str, volume: float,
                          stop_loss: float = None, take_profit: float = None) -> Dict:
-        """Place an order with enhanced error handling and slippage retries."""
+        """Place an order with enhanced error handling and slippage retries using thread pool."""
         try:
-            symbol_info = self.mt5.symbol_info(symbol)
+            loop = asyncio.get_event_loop()
+
+            # Get symbol info in thread pool
+            symbol_info = await loop.run_in_executor(self.executor, self.mt5.symbol_info, symbol)
             if symbol_info is None:
                 raise ValueError(f"Invalid symbol: {symbol}")
-                
+
             order_dict = {
                 'action': self.mt5.TRADE_ACTION_DEAL,
                 'symbol': symbol,
@@ -149,12 +167,13 @@ class EnhancedMT5BrokerInterface:
                 'type_time': self.mt5.ORDER_TIME_GTC,
                 'type_filling': self.mt5.ORDER_FILLING_IOC
             }
-            
+
             for attempt in range(self.max_retries):
-                result = self.mt5.order_send(order_dict)
+                # Send order in thread pool
+                result = await loop.run_in_executor(self.executor, self.mt5.order_send, order_dict)
                 if result is None:
                     raise ValueError("Order send failed")
-                
+
                 if result.retcode == self.mt5.TRADE_RETCODE_DONE:
                     return {
                         'status': OrderResult.SUCCESS.value,
@@ -166,7 +185,10 @@ class EnhancedMT5BrokerInterface:
                     logger.warning(f"Slippage on {symbol}; retry {attempt + 1}")
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(self.retry_delay)
-                        order_dict['price'] = self.mt5.symbol_info(symbol).bid if order_type.upper() == 'BUY' else self.mt5.symbol_info(symbol).ask
+                        # Refresh price in thread pool
+                        fresh_symbol_info = await loop.run_in_executor(self.executor, self.mt5.symbol_info, symbol)
+                        if fresh_symbol_info:
+                            order_dict['price'] = fresh_symbol_info.bid if order_type.upper() == 'BUY' else fresh_symbol_info.ask
                         continue
                     return {
                         'status': OrderResult.REJECTED.value,
@@ -181,7 +203,7 @@ class EnhancedMT5BrokerInterface:
                         'retcode': result.retcode,
                         'comment': result.comment
                     }
-                    
+
         except Exception as e:
             logger.error(f"Error placing order for {symbol}: {e}")
             return {
@@ -192,20 +214,22 @@ class EnhancedMT5BrokerInterface:
             }
     
     async def validate_spread(self, symbol: str) -> bool:
-        """Validate spread for the symbol."""
+        """Validate spread for the symbol using thread pool."""
         try:
-            symbol_info = self.mt5.symbol_info(symbol)
+            loop = asyncio.get_event_loop()
+            symbol_info = await loop.run_in_executor(self.executor, self.mt5.symbol_info, symbol)
             if symbol_info is None or symbol_info.spread > self.max_spread_pips:
                 return False
             return True
         except Exception as e:
             logger.error(f"Error validating spread for {symbol}: {e}")
             return False
-    
+
     async def get_spread_pips(self, symbol: str) -> Optional[Dict]:
-        """Get current spread and pip value in pips for symbol."""
+        """Get current spread and pip value in pips for symbol using thread pool."""
         try:
-            symbol_info = self.mt5.symbol_info(symbol)
+            loop = asyncio.get_event_loop()
+            symbol_info = await loop.run_in_executor(self.executor, self.mt5.symbol_info, symbol)
             if symbol_info is None:
                 return None
             return {
@@ -215,30 +239,40 @@ class EnhancedMT5BrokerInterface:
         except Exception as e:
             logger.error(f"get_spread_pips error for {symbol}: {e}")
             return None
-    
+
     async def close_position(self, ticket: int) -> Dict:
-        """Close a position."""
+        """Close a position using thread pool."""
         try:
-            position = self.mt5.positions_get(ticket=ticket)
-            if not position:
+            loop = asyncio.get_event_loop()
+
+            # Get position info in thread pool
+            positions = await loop.run_in_executor(self.executor, self.mt5.positions_get, ticket)
+            if not positions:
                 raise ValueError(f"Position {ticket} not found")
-                
-            position = position[0]
+
+            position = positions[0]
+
+            # Get symbol info for closing price
+            symbol_info = await loop.run_in_executor(self.executor, self.mt5.symbol_info, position.symbol)
+            if symbol_info is None:
+                raise ValueError(f"Symbol info not available for {position.symbol}")
+
             order_dict = {
                 'action': self.mt5.TRADE_ACTION_DEAL,
                 'position': ticket,
                 'symbol': position.symbol,
                 'volume': position.volume,
                 'type': self.mt5.ORDER_TYPE_SELL if position.type == self.mt5.ORDER_TYPE_BUY else self.mt5.ORDER_TYPE_BUY,
-                'price': self.mt5.symbol_info(position.symbol).bid if position.type == self.mt5.ORDER_TYPE_BUY else self.mt5.symbol_info(position.symbol).ask,
+                'price': symbol_info.bid if position.type == self.mt5.ORDER_TYPE_BUY else symbol_info.ask,
                 'type_time': self.mt5.ORDER_TIME_GTC,
                 'type_filling': self.mt5.ORDER_FILLING_IOC
             }
-            
-            result = self.mt5.order_send(order_dict)
+
+            # Send close order in thread pool
+            result = await loop.run_in_executor(self.executor, self.mt5.order_send, order_dict)
             if result is None or result.retcode != self.mt5.TRADE_RETCODE_DONE:
                 raise ValueError(f"Failed to close position {ticket}: {result.comment if result else 'No result'}")
-                
+
             return {
                 'status': OrderResult.SUCCESS.value,
                 'ticket': ticket,

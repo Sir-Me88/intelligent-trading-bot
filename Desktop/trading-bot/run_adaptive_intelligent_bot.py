@@ -8,12 +8,19 @@ import logging
 import signal
 import traceback
 import time
+import warnings
+from collections import deque
+import numpy as np  # Added for RL state calculations
 from datetime import datetime, timedelta, timezone  # Added timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any  # Added type hints
 from dotenv import load_dotenv
 import json
 import requests
+
+# Suppress gym deprecation warnings
+warnings.filterwarnings("ignore", message=".*Gym.*unmaintained.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*gym.*deprecated.*", category=DeprecationWarning)
 
 # Add src to path
 sys.path.append('src')
@@ -22,14 +29,50 @@ from src.config.settings import settings
 from src.data.market_data import MarketDataManager
 from src.trading.broker_interface import BrokerManager
 from src.analysis.technical import TechnicalAnalyzer, SignalDirection
-from src.analysis.trend_reversal_detector import TrendReversalDetector
-from src.ml.trading_ml_engine import TradingMLEngine
-from src.ml.trade_analyzer import TradeAnalyzer
 from src.analysis.correlation import CorrelationAnalyzer
-from src.scheduling.intelligent_scheduler import IntelligentScheduler
-from src.news.sentiment import SentimentAggregator
-from src.monitoring.metrics import MetricsCollector
-from src.analysis.trade_attribution import TradeAttributionAnalyzer
+
+# Advanced components (lazy-loaded to prevent import errors)
+try:
+    from src.analysis.trend_reversal_detector import TrendReversalDetector
+    REVERSAL_DETECTOR_AVAILABLE = True
+except ImportError:
+    REVERSAL_DETECTOR_AVAILABLE = False
+
+try:
+    from src.ml.trading_ml_engine import TradingMLEngine
+    ML_ENGINE_AVAILABLE = True
+except ImportError:
+    ML_ENGINE_AVAILABLE = False
+
+try:
+    from src.ml.trade_analyzer import TradeAnalyzer
+    TRADE_ANALYZER_AVAILABLE = True
+except ImportError:
+    TRADE_ANALYZER_AVAILABLE = False
+
+try:
+    from src.scheduling.intelligent_scheduler import IntelligentTradingScheduler
+    SCHEDULER_AVAILABLE = True
+except ImportError:
+    SCHEDULER_AVAILABLE = False
+
+try:
+    from src.news.sentiment import SentimentAggregator
+    SENTIMENT_AVAILABLE = True
+except ImportError:
+    SENTIMENT_AVAILABLE = False
+
+try:
+    from src.monitoring.metrics import MetricsCollector
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+
+try:
+    from src.analysis.trade_attribution import TradeAttributionAnalyzer
+    ATTRIBUTION_AVAILABLE = True
+except ImportError:
+    ATTRIBUTION_AVAILABLE = False
 
 # Setup logging
 logs_dir = Path("logs")
@@ -49,44 +92,40 @@ class AdaptiveIntelligentBot:
     """Advanced adaptive trading bot with ML learning and real-time reversal detection."""
     
     def __init__(self):
-        # Core components - Initialize data_manager first
-        self.data_manager = MarketDataManager()  # Initialize this first
+        logger.info("🤖 INITIALIZING ADAPTIVE INTELLIGENT BOT")
+        print("[INIT] AdaptiveIntelligentBot initializing...")
+
+        # Core components (always available)
+        self.data_manager = MarketDataManager()
         self.broker_manager = BrokerManager()
         self.technical_analyzer = TechnicalAnalyzer()
-        self.reversal_detector = TrendReversalDetector()
-        self.ml_engine = TradingMLEngine()
-        self.trade_analyzer = TradeAnalyzer()  # Real ML implementation
         self.correlation_analyzer = CorrelationAnalyzer(self.data_manager)
-        self.scheduler = IntelligentTradingScheduler()
-        self.sentiment_aggregator = SentimentAggregator()
-        self.metrics_collector = MetricsCollector()
-        self.attribution_analyzer = TradeAttributionAnalyzer()
-        
-        # Adaptive parameters (will be updated by ML) - RAISED THRESHOLDS
-        self.adaptive_params = {
-            'min_confidence': 0.85,  # RAISED from 0.72 to reduce false positives
-            'min_rr_ratio': 3.5,     # RAISED from 3.0 for better risk/reward
-            'profit_protection_percentage': 0.20,  # TIGHTENED from 0.25 for better protection
-            'reversal_confidence_threshold': 0.85,  # RAISED from 0.75 for fewer false reversals
-            'max_volatility': 0.002,
-            'minimum_profit_to_protect': 20.0,
-            # Dynamic ATR multipliers based on market conditions
-            'atr_multiplier_low_vol': 2.0,    # Low volatility markets
-            'atr_multiplier_normal_vol': 2.5,  # Normal volatility markets
-            'atr_multiplier_high_vol': 3.0,   # High volatility markets
-            'volatility_threshold_low': 0.001,
-            'volatility_threshold_high': 0.003
-        }
-        
+
+        # Advanced components (lazy-loaded to prevent startup delays)
+        self.reversal_detector = None
+        self.ml_engine = None
+        self.trade_analyzer = None
+        self.scheduler = None
+        self.sentiment_aggregator = None
+        self.metrics_collector = None
+        self.attribution_analyzer = None
+
+        # Load adaptive parameters from file if exists, otherwise use defaults
+        self.adaptive_params = self._load_adaptive_params()
+
         # Trading state
         self.running = True
         self.current_mode = 'TRADING'
         self.position_trackers = {}
-        self.daily_trade_data = []
-        self.weekly_trade_data = []
-        
+        self.paper_mode = os.getenv('PAPER_MODE', 'false').lower() == 'true'
+
+        # Capped buffers to prevent memory leaks
+        self.daily_trade_data = deque(maxlen=100)   # Max 100 trades per day
+        self.weekly_trade_data = deque(maxlen=500)  # Max 500 trades per week
+        self.rl_state_buffer = deque(maxlen=1000)   # Max 1000 states for RL
+
         # Performance tracking
-        self.heartbeat_file = logs_dir / "adaptive_bot_heartbeat.json"
+        self.heartbeat_file = Path("logs") / "adaptive_bot_heartbeat.json"
         self.scan_count = 0
         self.trades_executed = 0
         self.signals_analyzed = 0
@@ -96,13 +135,44 @@ class AdaptiveIntelligentBot:
         self.positions_closed_profit = 0
         self.positions_closed_loss = 0
         self.ml_analyses_performed = 0
-        
+
         # Learning data
         self.last_daily_analysis = None
         self.last_weekly_analysis = None
 
-        # RL Integration
-        self.rl_state_buffer = []  # Store recent market states for RL
+        logger.info("✅ Adaptive intelligent bot initialized with capped buffers")
+        print("[INIT] Initialization complete.")
+
+    def _load_adaptive_params(self) -> Dict:
+        """Load adaptive parameters from file or use defaults."""
+        param_file = Path('data/adaptive_params.json')
+        default_params = {
+            'min_confidence': 0.75,  # Conservative default
+            'min_rr_ratio': 2.5,     # Reasonable risk/reward
+            'profit_protection_percentage': 0.25,
+            'reversal_confidence_threshold': 0.75,
+            'max_volatility': 0.002,
+            'minimum_profit_to_protect': 20.0,
+            'atr_multiplier_low_vol': 2.0,
+            'atr_multiplier_normal_vol': 2.5,
+            'atr_multiplier_high_vol': 3.0,
+            'volatility_threshold_low': 0.001,
+            'volatility_threshold_high': 0.003
+        }
+
+        if param_file.exists():
+            try:
+                with open(param_file, 'r') as f:
+                    file_params = json.load(f)
+                # Merge file params with defaults
+                merged_params = {**default_params, **file_params}
+                logger.info(f"📄 Loaded adaptive parameters from {param_file}")
+                return merged_params
+            except Exception as e:
+                logger.warning(f"Failed to load parameters from {param_file}: {e}")
+
+        logger.info("📄 Using default adaptive parameters")
+        return default_params
         
     def signal_handler(self, signum: int, frame: Optional[Any]) -> None:
         """Handle system signals gracefully."""
@@ -112,6 +182,14 @@ class AdaptiveIntelligentBot:
     async def write_heartbeat(self):
         """Write comprehensive heartbeat with adaptive parameters."""
         try:
+            # Safely get scheduler info
+            schedule_info = "Scheduler not available"
+            if self.scheduler:
+                try:
+                    schedule_info = str(self.scheduler.get_trading_schedule_info())
+                except:
+                    schedule_info = "Scheduler error"
+
             heartbeat_data = {
                 'timestamp': datetime.now().isoformat(),
                 'mode': self.current_mode,
@@ -126,12 +204,20 @@ class AdaptiveIntelligentBot:
                 'ml_analyses_performed': self.ml_analyses_performed,
                 'adaptive_parameters': self.adaptive_params,
                 'running': self.running,
-                'schedule_info': str(self.scheduler.get_trading_schedule_info())
+                'schedule_info': schedule_info,
+                'components_available': {
+                    'reversal_detector': self.reversal_detector is not None,
+                    'ml_engine': self.ml_engine is not None,
+                    'scheduler': self.scheduler is not None,
+                    'sentiment_aggregator': self.sentiment_aggregator is not None,
+                    'metrics_collector': self.metrics_collector is not None,
+                    'attribution_analyzer': self.attribution_analyzer is not None
+                }
             }
-            
+
             with open(self.heartbeat_file, 'w') as f:
                 json.dump(heartbeat_data, f, indent=2)
-                
+
         except Exception as e:
             logger.error(f"Error writing heartbeat: {e}")
             
@@ -150,8 +236,13 @@ class AdaptiveIntelligentBot:
     async def real_time_reversal_monitoring(self):
         """Enhanced monitoring with trailing stops and Chandelier Exit integration."""
         try:
+            # Skip if reversal detector not available
+            if not REVERSAL_DETECTOR_AVAILABLE or self.reversal_detector is None:
+                logger.debug("Reversal detector not available - skipping advanced monitoring")
+                return
+
             positions = await self.broker_manager.get_positions()
-            
+
             for position in positions:
                 ticket = position.get('ticket')
                 symbol = position.get('symbol')
@@ -159,7 +250,7 @@ class AdaptiveIntelligentBot:
                 position_type = position.get('type')  # 0=BUY, 1=SELL
                 entry_price = position.get('price_open', 0)
                 current_sl = position.get('sl', 0)
-                
+
                 # Get current market data for reversal analysis - ALL TIMEFRAMES
                 try:
                     df_1m = await self.data_manager.get_candles(symbol, "M1", 100)
@@ -167,10 +258,10 @@ class AdaptiveIntelligentBot:
                     df_15m = await self.data_manager.get_candles(symbol, "M15", 50)
                     df_1h = await self.data_manager.get_candles(symbol, "H1", 50)
                     df_h4 = await self.data_manager.get_candles(symbol, "H4", 30)
-                    
+
                     if df_15m is None or df_1h is None:
                         continue
-                        
+
                     # Prepare comprehensive data for reversal detection
                     reversal_data = {
                         'df_1m': df_1m,
@@ -180,55 +271,55 @@ class AdaptiveIntelligentBot:
                         'df_h4': df_h4,
                         'current_position': 'LONG' if position_type == 0 else 'SHORT'
                     }
-                    
+
                     # ENHANCED TRAILING STOPS WITH CHANDELIER EXIT
                     await self._apply_trailing_stops(ticket, symbol, position_type, profit, entry_price, current_sl, df_15m)
-                    
+
                     # Detect trend reversal
                     reversal_result = self.reversal_detector.detect_trend_reversal(symbol, reversal_data)
-                    
+
                     # Check Chandelier Exit signals
                     chandelier_result = self.reversal_detector.detect_chandelier_exit_signal(
                         symbol, reversal_data, 'LONG' if position_type == 0 else 'SHORT'
                     )
-                    
+
                     # Combine reversal and Chandelier signals
                     should_exit = False
                     exit_reason = None
                     exit_confidence = 0.0
-                    
+
                     if reversal_result.get('reversal_detected', False):
                         self.reversals_detected += 1
                         should_exit = True
                         exit_reason = 'TREND_REVERSAL'
                         exit_confidence = reversal_result['confidence']
-                        
+
                         logger.info(f"🔄 TREND REVERSAL DETECTED: {symbol} #{ticket}")
                         logger.info(f"   Confidence: {reversal_result['confidence']:.2f}")
                         logger.info(f"   Direction: {reversal_result['direction']}")
                         logger.info(f"   Action: {reversal_result['immediate_action']}")
-                    
+
                     # Check Chandelier Exit (dynamic trailing stop)
                     if chandelier_result.get('chandelier_signal', 'HOLD').startswith('EXIT'):
                         if not should_exit or chandelier_result['confidence'] > exit_confidence:
                             should_exit = True
                             exit_reason = 'CHANDELIER_EXIT'
                             exit_confidence = chandelier_result['confidence']
-                            
+
                         logger.info(f"🚪 CHANDELIER EXIT TRIGGERED: {symbol} #{ticket}")
                         logger.info(f"   Confidence: {chandelier_result['confidence']:.2f}")
                         logger.info(f"   Exit Level: {chandelier_result['details']['exit_level_15m']:.5f}")
                         logger.info(f"   Distance: {chandelier_result['details']['distance_pips_15m']:.1f} pips")
-                        
+
                     # Execute exit if either signal triggered
                     if should_exit:
                         logger.info(f"🚨 EXECUTING {exit_reason}: {symbol} #{ticket}")
-                        
+
                         try:
                             close_result = await self.broker_manager.close_position(ticket)
                             if close_result:
                                 self.positions_closed_reversal += 1
-                                
+
                                 # Enhanced trade logging for ML learning
                                 exit_data = {
                                     'timestamp': datetime.now().isoformat(),
@@ -245,7 +336,7 @@ class AdaptiveIntelligentBot:
                                         'price_at_exit': df_15m['close'].iloc[-1] if len(df_15m) > 0 else 0
                                     }
                                 }
-                                
+
                                 # Add specific data based on exit reason
                                 if exit_reason == 'TREND_REVERSAL':
                                     exit_data.update({
@@ -258,22 +349,22 @@ class AdaptiveIntelligentBot:
                                         'distance_pips': chandelier_result['details']['distance_pips_15m'],
                                         'atr_value': chandelier_result['details']['atr_15m']
                                     })
-                                
+
                                 self.daily_trade_data.append(exit_data)
                                 self.weekly_trade_data.append(exit_data)
-                                
+
                                 logger.info(f"✅ {exit_reason} SUCCESSFUL: {symbol} at ${profit:.2f}")
-                                
+
                                 # Clean up position tracker
                                 if ticket in self.position_trackers:
                                     del self.position_trackers[ticket]
-                                
+
                         except Exception as e:
                             logger.error(f"Error executing {exit_reason} for {ticket}: {e}")
-                                
+
                 except Exception as e:
                     logger.error(f"Error in reversal monitoring for {symbol}: {e}")
-                    
+
         except Exception as e:
             logger.error(f"Error in real-time reversal monitoring: {e}")
     
@@ -449,11 +540,16 @@ class AdaptiveIntelligentBot:
     async def check_news_events(self, pair: str) -> bool:
         """Check for high-impact news events that could affect the pair."""
         try:
+            # Skip if scheduler not available
+            if not SCHEDULER_AVAILABLE or self.scheduler is None:
+                logger.debug("Scheduler not available - skipping news check")
+                return True
+
             events = await self.scheduler.get_upcoming_events(pair)
             now = datetime.now(timezone.utc)
-            
+
             for event in events:
-                if (event['impact'].lower() == 'high' and 
+                if (event['impact'].lower() == 'high' and
                     abs((datetime.fromisoformat(event['time']) - now).total_seconds()) < 3600):
                     logger.warning(f"🚨 HIGH-IMPACT NEWS for {pair}: {event['title']}")
                     return False
@@ -601,45 +697,50 @@ class AdaptiveIntelligentBot:
     async def perform_daily_ml_analysis(self):
         """Perform daily ML analysis during US-Japan gap."""
         try:
+            # Skip if ML engine not available
+            if not ML_ENGINE_AVAILABLE or self.ml_engine is None:
+                logger.debug("ML engine not available - skipping daily analysis")
+                return
+
             logger.info("🧠 STARTING DAILY ML ANALYSIS...")
-            
+
             # Prepare daily data
             daily_data = {
                 'session_date': datetime.now().date().isoformat(),
-                'executed_trades': self.daily_trade_data,
+                'executed_trades': list(self.daily_trade_data),  # Convert deque to list
                 'signals_analyzed': self.signals_analyzed,
                 'signals_rejected': self.signals_rejected,
                 'reversals_detected': self.reversals_detected,
                 'adaptive_parameters_used': self.adaptive_params.copy()
             }
-            
+
             # Perform ML analysis
             analysis_result = self.ml_engine.perform_daily_analysis(daily_data)
             self.last_daily_analysis = analysis_result
             self.ml_analyses_performed += 1
-            
+
             # ENHANCED ML FEEDBACK LOOP - Apply recommended parameter adjustments
             adjustments = analysis_result.get('strategy_adjustments', [])
             insights = analysis_result.get('ml_insights', {})
-            
+
             # Apply ML-driven parameter updates
             for adjustment in adjustments:
                 param = adjustment.get('parameter')
                 new_value = adjustment.get('recommended_value')
-                
+
                 if param in self.adaptive_params:
                     old_value = self.adaptive_params[param]
                     self.adaptive_params[param] = new_value
-                    
+
                     logger.info(f"🔧 ADAPTIVE PARAMETER UPDATE:")
                     logger.info(f"   {param}: {old_value} → {new_value}")
                     logger.info(f"   Reason: {adjustment.get('reason')}")
-            
+
             # ADDITIONAL ML-DRIVEN ADJUSTMENTS based on insights
             win_rate = insights.get('win_rate', 0.5)
             profit_factor = insights.get('profit_factor', 1.0)
             confidence_correlation = insights.get('confidence_correlation', 0)
-            
+
             # Adjust ATR multipliers based on win rate performance
             if win_rate < 0.6:
                 # Poor win rate - widen stops for safety
@@ -653,7 +754,7 @@ class AdaptiveIntelligentBot:
                     self.adaptive_params['atr_multiplier_normal_vol'] - 0.2, 2.0
                 )
                 logger.info(f"🔧 ML ADJUSTMENT: Tightening ATR multiplier due to high win rate ({win_rate:.1%})")
-            
+
             # Adjust confidence threshold based on correlation with performance
             if confidence_correlation < 0.2:
                 # Weak correlation - increase confidence requirement
@@ -667,7 +768,7 @@ class AdaptiveIntelligentBot:
                     self.adaptive_params['min_confidence'] - 0.02, 0.75
                 )
                 logger.info(f"🔧 ML ADJUSTMENT: Lowering confidence threshold due to strong correlation ({confidence_correlation:.2f})")
-            
+
             # Adjust profit protection based on profit factor
             if profit_factor < 1.2:
                 # Poor profit factor - tighten protection
@@ -681,12 +782,12 @@ class AdaptiveIntelligentBot:
                     self.adaptive_params['profit_protection_percentage'] + 0.02, 0.25
                 )
                 logger.info(f"🔧 ML ADJUSTMENT: Relaxing profit protection due to high profit factor ({profit_factor:.2f})")
-                    
+
             # Reset daily data
-            self.daily_trade_data = []
-            
+            self.daily_trade_data.clear()
+
             logger.info("✅ DAILY ML ANALYSIS COMPLETE")
-            
+
         except Exception as e:
             logger.error(f"Error in daily ML analysis: {e}")
             
@@ -732,6 +833,11 @@ class AdaptiveIntelligentBot:
                                         end_date: Optional[str] = None) -> Dict[str, Any]:
         """Generate comprehensive trade attribution report."""
         try:
+            # Skip if attribution analyzer not available
+            if not ATTRIBUTION_AVAILABLE or self.attribution_analyzer is None:
+                logger.debug("Attribution analyzer not available - skipping report generation")
+                return {'error': 'Attribution analyzer not available'}
+
             logger.info("📊 GENERATING TRADE ATTRIBUTION REPORT...")
 
             # Generate attribution analysis
@@ -771,6 +877,11 @@ class AdaptiveIntelligentBot:
     async def get_rl_parameter_adjustments(self) -> Dict:
         """Get parameter adjustments from trained RL model."""
         try:
+            # Skip if ML engine not available
+            if not ML_ENGINE_AVAILABLE or self.ml_engine is None:
+                logger.debug("ML engine not available - skipping RL adjustments")
+                return {}
+
             # Get current market state for RL
             current_state = await self._get_current_market_state()
             if current_state is None:
@@ -876,12 +987,15 @@ class AdaptiveIntelligentBot:
         try:
             logger.info(f"🤖 ADAPTIVE SCAN #{self.scan_count + 1}")
 
-            # Perform health check
-            health_status = await self.metrics_collector.perform_health_check()
-            if health_status.get('overall_health', 100) < 50:
-                logger.warning(f"⚠️ SYSTEM HEALTH WARNING: {health_status.get('overall_health', 0)}%")
-                for alert in health_status.get('alerts', []):
-                    logger.warning(f"   {alert['type']}: {alert['message']}")
+            # Perform health check only if metrics_collector is available
+            if self.metrics_collector is not None:
+                health_status = await self.metrics_collector.perform_health_check()
+                if health_status.get('overall_health', 100) < 50:
+                    logger.warning(f"⚠️ SYSTEM HEALTH WARNING: {health_status.get('overall_health', 0)}%")
+                    for alert in health_status.get('alerts', []):
+                        logger.warning(f"   {alert['type']}: {alert['message']}")
+            else:
+                logger.info("⚠️ Metrics collector not available - skipping health check")
 
             # Get RL-based parameter adjustments
             rl_adjustments = await self.get_rl_parameter_adjustments()
@@ -895,7 +1009,7 @@ class AdaptiveIntelligentBot:
 
             # Adaptive protection
             await self.adaptive_percentage_protection()
-            
+
             # PARALLEL PROCESSING - Process multiple currency pairs concurrently
             pairs = settings.get_currency_pairs()
             logger.info(f"🔄 Processing {len(pairs)} currency pairs with parallel processing")
@@ -905,11 +1019,13 @@ class AdaptiveIntelligentBot:
                 """Fetch all required data for a currency pair in parallel."""
                 try:
                     # Parallel data fetching
-                    df_15m_task = self.data_manager.get_candles(pair, "M15", 100)
-                    df_1h_task = self.data_manager.get_candles(pair, "H1", 100)
-                    df_h4_task = self.data_manager.get_candles(pair, "H4", 50)
-                    spread_task = self.broker_manager.get_spread_pips(pair)
-                    sentiment_task = self.sentiment_aggregator.get_overall_sentiment(pair.replace('_', ''))
+                    df_15m_task = asyncio.create_task(self.data_manager.get_candles(pair, "M15", 100))
+                    df_1h_task = asyncio.create_task(self.data_manager.get_candles(pair, "H1", 100))
+                    df_h4_task = asyncio.create_task(self.data_manager.get_candles(pair, "H4", 50))
+                    spread_task = asyncio.create_task(self.broker_manager.get_spread_pips(pair))
+                    async def empty_sentiment():
+                        return {}
+                    sentiment_task = self.sentiment_aggregator.get_overall_sentiment(pair.replace('_', '')) if SENTIMENT_AVAILABLE and self.sentiment_aggregator else empty_sentiment()
 
                     # Execute all tasks concurrently
                     df_15m, df_1h, df_h4, spread_pips, sentiment_data = await asyncio.gather(
@@ -954,9 +1070,10 @@ class AdaptiveIntelligentBot:
             portfolio_metrics = self.correlation_analyzer.calculate_portfolio_metrics(positions)
             await self.correlation_analyzer.update_correlation_matrix(pairs)
 
-            # Update monitoring metrics
-            self.metrics_collector.update_account_metrics(account_info)
-            self.metrics_collector.update_position_metrics(positions, sum(abs(pos.get('profit', 0)) for pos in positions if pos.get('profit', 0) < 0))
+            # Update monitoring metrics only if metrics_collector is available
+            if self.metrics_collector is not None:
+                self.metrics_collector.update_account_metrics(account_info)
+                self.metrics_collector.update_position_metrics(positions, sum(abs(pos.get('profit', 0)) for pos in positions if pos.get('profit', 0) < 0))
 
             # Process each pair with parallel signal analysis
             async def process_pair_trading_logic(pair_data: Dict) -> None:
@@ -966,14 +1083,15 @@ class AdaptiveIntelligentBot:
                     df_15m = pair_data['df_15m']
                     df_1h = pair_data['df_1h']
                     df_h4 = pair_data['df_h4']
-                    spread_pips = pair_data['spread_pips']
+                    spread_data = pair_data['spread_pips']
+                    spread_pips = spread_data.get('spread_pips') if spread_data and isinstance(spread_data, dict) else None
                     sentiment_data = pair_data['sentiment_data']
 
                     self.signals_analyzed += 1
 
                     # Validate data quality
                     if len(df_15m) < 50:
-                        logger.debug(f"   {pair}: Insufficient 15M data ({len(df_15m)} candles)")
+                        logger.debug(f"Insufficient data for {pair}, skipping")
                         return
 
                     # Parallel signal analysis components
@@ -1111,8 +1229,9 @@ class AdaptiveIntelligentBot:
                     if order_result and order_result.get('ticket'):
                         self.trades_executed += 1
 
-                        # Record trade metrics
-                        self.metrics_collector.record_trade(signal, round(volume, 2), sentiment_data)
+                        # Record trade metrics only if metrics_collector is available
+                        if self.metrics_collector is not None:
+                            self.metrics_collector.record_trade(signal, round(volume, 2), sentiment_data)
 
                         # Record trade for attribution analysis
                         trade_data = {
@@ -1144,8 +1263,9 @@ class AdaptiveIntelligentBot:
                             'session': 'normal'  # Could be enhanced with session detection
                         }
 
-                        # Add trade to attribution analyzer
-                        self.attribution_analyzer.add_trade(trade_data)
+                        # Add trade to attribution analyzer if available
+                        if self.attribution_analyzer is not None:
+                            self.attribution_analyzer.add_trade(trade_data)
 
                         self.daily_trade_data.append(trade_data)
                         self.weekly_trade_data.append(trade_data)
@@ -1161,20 +1281,22 @@ class AdaptiveIntelligentBot:
 
             logger.info(f"🔄 Parallel processing completed for {len(valid_pair_data)} pairs")
 
-            # Record scan performance
+            # Record scan performance only if metrics_collector is available
             scan_duration = time.time() - scan_start_time
-            self.metrics_collector.record_scan_performance(
-                scan_duration=scan_duration,
-                pairs_processed=len(valid_pair_data),
-                signals_generated=self.signals_analyzed - self.signals_rejected,
-                trades_executed=self.trades_executed
-            )
+            if self.metrics_collector is not None:
+                self.metrics_collector.record_scan_performance(
+                    scan_duration=scan_duration,
+                    pairs_processed=len(valid_pair_data),
+                    signals_generated=self.signals_analyzed - self.signals_rejected,
+                    trades_executed=self.trades_executed
+                )
 
             self.scan_count += 1
 
         except Exception as e:
             logger.error(f"Error in adaptive trading scan: {e}")
-            self.metrics_collector.increment_error_count("scan_error")
+            if self.metrics_collector:
+                self.metrics_collector.increment_error_count("scan_error")
             
     async def run_adaptive_intelligent_bot(self):
         """Main adaptive intelligent bot loop."""
@@ -1188,24 +1310,51 @@ class AdaptiveIntelligentBot:
         logger.info("   - Intelligent scheduling")
         logger.info("   - Enhanced profit protection")
         logger.info("="*80)
-        
+        print("[RUN] Main bot loop starting...")
         # Setup signal handlers
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+        while self.running:
+            print(f"[RUN] Bot loop iteration {self.scan_count + 1}...")
+            try:
+                await self.adaptive_trading_scan()
+                print(f"[RUN] Completed trading scan #{self.scan_count + 1}")
+                self.scan_count += 1
+            except Exception as e:
+                print(f"[ERROR] Exception in main loop: {e}")
+            await asyncio.sleep(1)  # Prevent tight loop
         
         try:
-            # Initialize components
+            # Initialize core components (always available)
             await self.data_manager.initialize()
             await self.broker_manager.initialize()
-            await self.metrics_collector.start()
-            
-            # Register mode change handler
-            self.scheduler.register_mode_change_callback(self.mode_change_handler)
-            
-            # Start scheduler monitoring
-            scheduler_task = asyncio.create_task(self.scheduler.monitor_mode_changes())
-            
-            logger.info("✅ Adaptive intelligent bot initialized")
+
+            # Initialize advanced components lazily (only if available)
+            if METRICS_AVAILABLE and self.metrics_collector:
+                await self.metrics_collector.start()
+                logger.info("✅ Metrics collector initialized")
+            else:
+                logger.info("⚠️ Metrics collector not available - monitoring disabled")
+
+            if SCHEDULER_AVAILABLE and self.scheduler:
+                self.scheduler.register_mode_change_callback(self.mode_change_handler)
+                scheduler_task = asyncio.create_task(self.scheduler.monitor_mode_changes())
+                logger.info("✅ Intelligent scheduler initialized")
+            else:
+                logger.info("⚠️ Intelligent scheduler not available - basic mode switching disabled")
+                scheduler_task = None
+
+            # Log component availability
+            logger.info("🔧 COMPONENT STATUS:")
+            logger.info(f"   Reversal Detector: {'✅' if REVERSAL_DETECTOR_AVAILABLE and self.reversal_detector else '❌'}")
+            logger.info(f"   ML Engine: {'✅' if ML_ENGINE_AVAILABLE and self.ml_engine else '❌'}")
+            logger.info(f"   Trade Analyzer: {'✅' if TRADE_ANALYZER_AVAILABLE and self.trade_analyzer else '❌'}")
+            logger.info(f"   Intelligent Scheduler: {'✅' if SCHEDULER_AVAILABLE and self.scheduler else '❌'}")
+            logger.info(f"   Sentiment Aggregator: {'✅' if SENTIMENT_AVAILABLE and self.sentiment_aggregator else '❌'}")
+            logger.info(f"   Metrics Collector: {'✅' if METRICS_AVAILABLE and self.metrics_collector else '❌'}")
+            logger.info(f"   Attribution Analyzer: {'✅' if ATTRIBUTION_AVAILABLE and self.attribution_analyzer else '❌'}")
+
+            logger.info("✅ Adaptive intelligent bot initialized with Phase 1 improvements")
             
             # Main adaptive loop
             while self.running:
@@ -1249,3 +1398,7 @@ class AdaptiveIntelligentBot:
         finally:
             logger.info("🛑 Adaptive intelligent bot shutting down...")
             await self.write_heartbeat()
+
+if __name__ == "__main__":
+    bot = AdaptiveIntelligentBot()
+    asyncio.run(bot.run_adaptive_intelligent_bot())

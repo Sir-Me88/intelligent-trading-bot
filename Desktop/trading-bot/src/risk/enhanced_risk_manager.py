@@ -246,7 +246,7 @@ class EnhancedRiskManager:
                 return {'risk_level': RiskLevel.MEDIUM, 'reason': 'Insufficient data for volatility check'}
             
             # Calculate price changes
-            closes = [rate[4] for rate in rates]  # Close prices
+            closes = [rate.close for rate in rates]  # Close prices
             price_changes = []
             for i in range(1, len(closes)):
                 change = abs(closes[i] - closes[i-1]) / closes[i-1]
