@@ -75,6 +75,7 @@ class MetricsCollector:
         self.server_started = False
         self.health_check_interval = 30  # seconds
         self.last_health_check = 0
+        self._last_system_health_value = 100  # Default to 100 at startup
     
     async def start(self):
         """Start Prometheus metrics server."""
@@ -228,6 +229,7 @@ class MetricsCollector:
 
             health_status['overall_health'] = max(0, health_score)
             self.system_health.set(health_status['overall_health'])
+            self._last_system_health_value = health_status['overall_health']
 
             # Trigger alerts for critical issues
             for alert in health_status['alerts']:
@@ -256,7 +258,7 @@ class MetricsCollector:
         # Return basic cached status
         return {
             'timestamp': datetime.now().isoformat(),
-            'overall_health': self.system_health._value if hasattr(self.system_health, '_value') else 50,
+            'overall_health': getattr(self, '_last_system_health_value', 50),
             'cached': True
         }
 

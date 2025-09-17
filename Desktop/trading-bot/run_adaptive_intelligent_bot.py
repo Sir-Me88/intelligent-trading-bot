@@ -1,3 +1,7 @@
+def safe_get_sentiment_value(sentiment_data, key, default=0.0):
+    if isinstance(sentiment_data, dict):
+        return sentiment_data.get(key, default)
+    return default
 #!/usr/bin/env python3
 """Adaptive Intelligent Trading Bot with ML Learning and Real-time Reversal Detection."""
 
@@ -65,8 +69,10 @@ except ImportError:
 try:
     from src.monitoring.metrics import MetricsCollector
     METRICS_AVAILABLE = True
-except ImportError:
+    print('[METRICS] MetricsCollector import succeeded')
+except ImportError as e:
     METRICS_AVAILABLE = False
+    print(f'[METRICS] MetricsCollector import failed: {e}')
 
 try:
     from src.analysis.trade_attribution import TradeAttributionAnalyzer
@@ -107,7 +113,10 @@ class AdaptiveIntelligentBot:
         self.trade_analyzer = None
         self.scheduler = None
         self.sentiment_aggregator = None
-        self.metrics_collector = None
+        if METRICS_AVAILABLE:
+            self.metrics_collector = MetricsCollector()
+        else:
+            self.metrics_collector = None
         self.attribution_analyzer = None
 
         # Load adaptive parameters from file if exists, otherwise use defaults
@@ -144,7 +153,7 @@ class AdaptiveIntelligentBot:
         print("[INIT] Initialization complete.")
 
     def _load_adaptive_params(self) -> Dict:
-        """Load adaptive parameters from file or use defaults."""
+        """Load adaptive parameters from file or use defaults, with debug logging."""
         param_file = Path('data/adaptive_params.json')
         default_params = {
             'min_confidence': 0.75,  # Conservative default
@@ -164,14 +173,15 @@ class AdaptiveIntelligentBot:
             try:
                 with open(param_file, 'r') as f:
                     file_params = json.load(f)
-                # Merge file params with defaults
                 merged_params = {**default_params, **file_params}
-                logger.info(f"📄 Loaded adaptive parameters from {param_file}")
+                logger.info(f"📄 Loaded adaptive parameters from {param_file}: {merged_params}")
+                print(f"[PARAMS] Loaded adaptive parameters: {merged_params}")
                 return merged_params
             except Exception as e:
                 logger.warning(f"Failed to load parameters from {param_file}: {e}")
 
-        logger.info("📄 Using default adaptive parameters")
+        logger.info(f"📄 Using default adaptive parameters: {default_params}")
+        print(f"[PARAMS] Using default adaptive parameters: {default_params}")
         return default_params
         
     def signal_handler(self, signum: int, frame: Optional[Any]) -> None:
@@ -258,6 +268,16 @@ class AdaptiveIntelligentBot:
                     df_15m = await self.data_manager.get_candles(symbol, "M15", 50)
                     df_1h = await self.data_manager.get_candles(symbol, "H1", 50)
                     df_h4 = await self.data_manager.get_candles(symbol, "H4", 30)
+                    if df_1m is not None:
+                        df_1m = df_1m.reset_index()
+                    if df_5m is not None:
+                        df_5m = df_5m.reset_index()
+                    if df_15m is not None:
+                        df_15m = df_15m.reset_index()
+                    if df_1h is not None:
+                        df_1h = df_1h.reset_index()
+                    if df_h4 is not None:
+                        df_h4 = df_h4.reset_index()
 
                     if df_15m is None or df_1h is None:
                         continue
@@ -646,6 +666,8 @@ class AdaptiveIntelligentBot:
 
             # Get market volatility for adaptive threshold
             df_recent = await self.data_manager.get_candles(pair, "M15", 20)
+            if df_recent is not None:
+                df_recent = df_recent.reset_index()
             if df_recent is not None and len(df_recent) >= 10:
                 recent_volatility = df_recent['close'].pct_change().std()
 
@@ -901,7 +923,7 @@ class AdaptiveIntelligentBot:
 
             # Clamp adjustments to reasonable ranges
             adjustments['min_confidence'] = max(0.75, min(0.95, adjustments['min_confidence']))
-            adjustments['min_rr_ratio'] = max(2.5, min(4.5, adjustments['min_rr_ratio']))
+            adjustments['min_rr_ratio'] = max(2.0, min(4.5, adjustments['min_rr_ratio']))
             adjustments['atr_multiplier_normal_vol'] = max(2.0, min(4.0, adjustments['atr_multiplier_normal_vol']))
 
             logger.info("🎯 RL Parameter Adjustments Applied:")
@@ -927,6 +949,8 @@ class AdaptiveIntelligentBot:
             for pair in pairs[:3]:  # Use top 3 pairs for state calculation
                 try:
                     df = await self.data_manager.get_candles(pair, "M15", 20)
+                    if df is not None:
+                        df = df.reset_index()
                     if df is not None and len(df) >= 10:
                         # Calculate RSI (simplified)
                         rsi = 50  # Default
@@ -1040,7 +1064,12 @@ class AdaptiveIntelligentBot:
                     if isinstance(df_1h, Exception) or df_1h is None:
                         logger.warning(f"Failed to fetch 1H data for {pair}")
                         return None
-
+                    if df_15m is not None:
+                        df_15m = df_15m.reset_index()
+                    if df_1h is not None:
+                        df_1h = df_1h.reset_index()
+                    if df_h4 is not None and not isinstance(df_h4, Exception):
+                        df_h4 = df_h4.reset_index()
                     return {
                         'pair': pair,
                         'df_15m': df_15m,
@@ -1133,8 +1162,11 @@ class AdaptiveIntelligentBot:
                     volume_scale = 1.0
 
                     # Sentiment-based volume scaling
-                    sentiment_score = sentiment_data.get('overall_sentiment', 0.0)
-                    sentiment_confidence = sentiment_data.get('overall_confidence', 0.0)
+
+                    sentiment_score = safe_get_sentiment_value(sentiment_data, 'overall_sentiment', 0.0)
+                    sentiment_confidence = safe_get_sentiment_value(sentiment_data, 'overall_confidence', 0.0)
+                    if not isinstance(sentiment_data, dict):
+                        logger.warning(f"   {pair}: Invalid sentiment_data type ({type(sentiment_data)}), using default sentiment values.")
 
                     if sentiment_confidence > 0.3:
                         if sentiment_score < -0.3:  # Very negative sentiment

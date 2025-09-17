@@ -37,25 +37,16 @@ async def test_update_correlation_matrix(correlation_analyzer, mock_market_data)
     assert list(result.columns) == pairs
 
 @pytest.mark.asyncio
-async def test_alternative_data_fallback(correlation_analyzer, mock_market_data):
-    # Mock MT5 failure
-    mock_market_data.get_candles.return_value = None
-    
-    # Mock Twelve Data success
-    alt_data = {
-        'values': [
-            {'close': '1.0'},
-            {'close': '1.1'},
-            {'close': '1.2'}
-        ]
-    }
-    mock_market_data.fetch_alternative_data.return_value = alt_data
-    
+async def test_empty_correlation_matrix(correlation_analyzer, mock_market_data):
+    # Test behavior when no data is available
+    mock_market_data.get_candles.return_value = pd.DataFrame()
+
     pairs = ['EURUSD']
     result = await correlation_analyzer.update_correlation_matrix(pairs)
-    
-    assert mock_market_data.fetch_alternative_data.called
+
+    # Should return empty DataFrame when insufficient data
     assert isinstance(result, pd.DataFrame)
+    assert result.empty
 
 def test_find_hedging_opportunities(correlation_analyzer):
     # Create test correlation matrix

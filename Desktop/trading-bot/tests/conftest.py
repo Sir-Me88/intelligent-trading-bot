@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-from src.config.settings import Settings
+from src.config.settings import TradingSettings
 from src.data.market_data import MarketDataManager
 from src.trading.position_manager import Position, PositionStatus
 
@@ -23,10 +23,10 @@ def event_loop():
 @pytest.fixture
 def mock_settings():
     """Mock settings for testing."""
-    settings = Settings()
-    settings.mt5.login = "test_login"
-    settings.mt5.password = "test_password"
-    settings.mt5.server = "test_server"
+    settings = TradingSettings()
+    settings.mt5_login = "test_login"
+    settings.mt5_password = "test_password"
+    settings.mt5_server = "test_server"
     settings.trading.risk_per_trade = 0.01
     settings.trading.max_total_risk = 0.06
     return settings
@@ -35,7 +35,7 @@ def mock_settings():
 @pytest.fixture
 def sample_candle_data():
     """Sample OHLC data for testing."""
-    dates = pd.date_range(start='2024-01-01', periods=100, freq='15T')
+    dates = pd.date_range(start='2024-01-01', periods=100, freq='15min')
     
     # Generate realistic forex data
     np.random.seed(42)
@@ -71,20 +71,18 @@ def mock_market_data_manager():
 @pytest.fixture
 def sample_position():
     """Sample trading position for testing."""
-    return Position(
+    pos = Position(
         id="test_pos_1",
         pair="EUR_USD",
         direction="buy",
         size=0.1,
         entry_price=1.1000,
-        current_price=1.1010,
         stop_loss=1.0950,
-        take_profit=1.1100,
-        unrealized_pnl=10.0,
-        realized_pnl=0.0,
-        status=PositionStatus.OPEN,
-        open_time=datetime.now() - timedelta(hours=1)
+        take_profit=1.1100
     )
+    # Update current price to simulate market movement
+    pos.update_current_price(1.1010)
+    return pos
 
 
 @pytest.fixture

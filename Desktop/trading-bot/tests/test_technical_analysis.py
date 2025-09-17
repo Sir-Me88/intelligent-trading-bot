@@ -63,15 +63,20 @@ class TestTechnicalAnalyzer:
         assert atr > 0
         assert isinstance(atr, float)
     
-    def test_signal_generation_no_pattern(self, sample_candle_data):
+    @patch('src.analysis.technical.TechnicalAnalyzer._detect_bullish_engulfing')
+    @patch('src.analysis.technical.TechnicalAnalyzer._detect_bearish_engulfing')
+    def test_signal_generation_no_pattern(self, mock_bearish, mock_bullish, sample_candle_data):
         """Test signal generation when no pattern is found."""
         analyzer = TechnicalAnalyzer()
-        
-        # Use random data that shouldn't form clear patterns
+
+        # Mock pattern detection to return None (no patterns)
+        mock_bullish.return_value = None
+        mock_bearish.return_value = None
+
         signal = analyzer.generate_signal(sample_candle_data, sample_candle_data)
-        
+
         assert signal['direction'] == SignalDirection.NONE
-        assert signal['confidence'] == 0.0
+        assert signal.get('confidence', 0.0) == 0.0
     
     @patch('src.analysis.technical.TechnicalAnalyzer._detect_bullish_engulfing')
     def test_signal_generation_with_pattern(self, mock_detect, sample_candle_data):

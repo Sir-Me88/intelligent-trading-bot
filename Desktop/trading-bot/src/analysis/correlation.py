@@ -498,3 +498,53 @@ class CorrelationAnalyzer:
         except Exception as e:
             logger.error(f"Error calculating portfolio metrics: {e}")
             return {"status": "Calculation failed", "error": str(e), "metrics": {}}
+
+    def get_correlation(self, pair1: str, pair2: str) -> float:
+        """Get correlation between two pairs."""
+        if self.correlation_matrix is None:
+            return 0.0
+        try:
+            return float(self.correlation_matrix.loc[pair1, pair2])
+        except (KeyError, TypeError):
+            return 0.0
+
+    def find_correlated_pairs(self, target_pair: str, threshold: float = 0.7) -> List[Dict]:
+        """Find pairs correlated with target pair above threshold."""
+        if self.correlation_matrix is None or target_pair not in self.correlation_matrix.columns:
+            return []
+
+        correlated = []
+        for pair in self.correlation_matrix.columns:
+            if pair == target_pair:
+                continue
+            corr = abs(self.get_correlation(target_pair, pair))
+            if corr >= threshold:
+                correlated.append({
+                    "pair": pair,
+                    "correlation": self.get_correlation(target_pair, pair),
+                    "abs_correlation": corr
+                })
+
+        return sorted(correlated, key=lambda x: x["abs_correlation"], reverse=True)
+
+    def is_correlation_matrix_stale(self) -> bool:
+        """Check if correlation matrix needs updating."""
+        if self.last_update is None:
+            return True
+        # Consider stale if older than 1 hour
+        return (datetime.utcnow() - self.last_update) > timedelta(hours=1)
+
+    def _calculate_hedge_ratio(self, pair1: str, pair2: str, correlation: float = None) -> float:
+        """Calculate hedge ratio based on correlation and volatility."""
+        if correlation is None:
+            correlation = self.get_correlation(pair1, pair2)
+
+        vol1 = self.pair_volatilities.get(pair1, 0.02)
+        vol2 = self.pair_volatilities.get(pair2, 0.02)
+
+        if vol2 > 0:
+            ratio = abs(correlation) * (vol1 / vol2)
+        else:
+            ratio = abs(correlation)
+
+        return float(min(ratio, 1.0))
