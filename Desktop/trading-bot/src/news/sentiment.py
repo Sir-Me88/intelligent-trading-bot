@@ -6,6 +6,8 @@ from typing import List, Dict, Optional
 import logging
 from datetime import datetime, timedelta
 import re
+import os
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -628,93 +630,42 @@ class NewsEventMonitor:
 
 
 class SentimentAggregator:
-    """Aggregates sentiment from multiple sources."""
-    
-    def __init__(self):
-        self.twitter_monitor = TwitterSentimentMonitor()
-        self.news_monitor = NewsEventMonitor()
-    
-    async def get_overall_sentiment(self, currency_pair: str) -> Dict:
-        """Get overall sentiment for a currency pair from all sources."""
-        # Handle currency pairs like "EURUSD" -> "EUR", "USD"
-        if len(currency_pair) == 6:
-            base_currency = currency_pair[:3]
-            quote_currency = currency_pair[3:]
-        else:
-            # Fallback for other formats
-            base_currency = currency_pair[:3]
-            quote_currency = currency_pair[3:]
-        
-        # Get sentiment from different sources
-        twitter_sentiment = await self.twitter_monitor.get_recent_sentiment(currency_pair)
-        base_news_sentiment = await self.news_monitor.get_breaking_news_sentiment(base_currency)
-        quote_news_sentiment = await self.news_monitor.get_breaking_news_sentiment(quote_currency)
-        
-        # Combine sentiments with weights
-        sentiments = []
-        weights = []
-        
-        # Twitter sentiment
-        if twitter_sentiment['confidence'] > 0:
-            sentiments.append(twitter_sentiment['sentiment'])
-            weights.append(twitter_sentiment['confidence'] * 0.4)  # 40% weight for Twitter
-        
-        # Base currency news sentiment
-        if base_news_sentiment['confidence'] > 0:
-            sentiments.append(base_news_sentiment['sentiment'])
-            weights.append(base_news_sentiment['confidence'] * 0.3)  # 30% weight for base currency news
-        
-        # Quote currency news sentiment (inverted for pair sentiment)
-        if quote_news_sentiment['confidence'] > 0:
-            sentiments.append(-quote_news_sentiment['sentiment'])  # Inverted
-            weights.append(quote_news_sentiment['confidence'] * 0.3)  # 30% weight for quote currency news
-        
-        # Calculate weighted average
-        if sentiments and weights:
-            overall_sentiment = sum(s * w for s, w in zip(sentiments, weights)) / sum(weights)
-            overall_confidence = sum(weights) / len(weights)
-        else:
-            overall_sentiment = 0.0
-            overall_confidence = 0.0
-        
-        # Generate XAI explanation for the overall sentiment decision
-        sentiment_analyzer = SentimentAnalyzer()
-        explanation = sentiment_analyzer.explain_sentiment_decision(
-            text=f"Combined sentiment analysis for {currency_pair}",
-            sentiment_score=overall_sentiment,
-            context=f"Twitter: {twitter_sentiment.get('sentiment', 0):.2f}, News: {base_news_sentiment.get('sentiment', 0):.2f}"
-        )
+    def __init__(self, api_key=None):
+        self.api_key = api_key or os.getenv("GROK_API_KEY")
+        self.local_analyzer = SentimentAnalyzer()
 
-        return {
-            'overall_sentiment': overall_sentiment,
-            'overall_confidence': overall_confidence,
-            'twitter_sentiment': twitter_sentiment,
-            'base_currency_news': base_news_sentiment,
-            'quote_currency_news': quote_news_sentiment,
-            'recommendation': self._get_sentiment_recommendation(overall_sentiment, overall_confidence),
-            'xai_explanation': explanation  # EU AI Act compliance
-        }
-    
-    def _get_sentiment_recommendation(self, sentiment: float, confidence: float) -> Dict:
-        """Get trading recommendation based on sentiment."""
-        if confidence < 0.3:
-            return {'action': 'ignore', 'reason': 'Low confidence sentiment data'}
-        
-        if sentiment < -0.3:
+    async def get_overall_sentiment(self, currency_pair: str, high_stakes: bool = False) -> dict:
+        """
+        Hybrid sentiment: Use Grok API for high-stakes, else local (FinGPT/VADER/FinBERT).
+        Falls back to local if Grok fails.
+        """
+        # Use Grok for high-stakes events
+        if high_stakes:
+            grok_result = await self._try_grok(currency_pair)
+            if grok_result and grok_result.get("overall_confidence", 0.0) > 0:
+                return grok_result
+            # If Grok fails, fall back to local
+
+        # Use local sentiment (FinGPT/VADER/FinBERT)
+        return await self._local_sentiment(currency_pair)
+
+    async def _try_grok(self, symbol: str) -> dict:
+        url = "https://api.grok.xai/sentiment"  # Replace with actual Grok endpoint
+        params = {"symbol": symbol}
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=5)
+            response.raise_for_status()
+            data = response.json()
             return {
-                'action': 'reduce_position_size',
-                'factor': 0.5,
-                'reason': f'Negative sentiment ({sentiment:.2f}) detected'
+                "overall_sentiment": data.get("sentiment_score", 0.0),
+                "overall_confidence": data.get("confidence", 0.0),
+                "source": "grok"
             }
-        elif sentiment > 0.3:
-            return {
-                'action': 'normal',
-                'factor': 1.0,
-                'reason': f'Positive sentiment ({sentiment:.2f}) detected'
-            }
-        else:
-            return {
-                'action': 'normal',
-                'factor': 1.0,
-                'reason': 'Neutral sentiment'
-            }
+        except Exception as e:
+            print(f"[SENTIMENT] Grok API error: {e}")
+            return {}
+
+    async def _local_sentiment(self, currency_pair: str) -> dict:
+        # Use your existing local logic (VADER/FinBERT/FinGPT)
+        return await self.local_analyzer.get_overall_sentiment(currency_pair)

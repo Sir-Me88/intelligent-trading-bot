@@ -43,6 +43,52 @@ class EnhancedMT5BrokerInterface:
         """Cleanup thread pool on destruction."""
         if hasattr(self, 'executor'):
             self.executor.shutdown(wait=False)
+
+    def _decode_mt5_error(self, retcode: int) -> str:
+        """Decode MT5 return codes to human-readable descriptions."""
+        error_codes = {
+            10004: "TRADE_RETCODE_REQUOTE - Requote",
+            10006: "TRADE_RETCODE_REJECT - Request rejected",
+            10007: "TRADE_RETCODE_CANCEL - Request canceled by trader",
+            10008: "TRADE_RETCODE_PLACED - Order placed",
+            10009: "TRADE_RETCODE_DONE - Request completed",
+            10010: "TRADE_RETCODE_DONE_PARTIAL - Only part of the request was completed",
+            10011: "TRADE_RETCODE_ERROR - Request processing error",
+            10012: "TRADE_RETCODE_TIMEOUT - Request timed out",
+            10013: "TRADE_RETCODE_INVALID - Invalid request",
+            10014: "TRADE_RETCODE_INVALID_VOLUME - Invalid volume in the request",
+            10015: "TRADE_RETCODE_INVALID_PRICE - Invalid price in the request",
+            10016: "TRADE_RETCODE_INVALID_STOPS - Invalid stops in the request",
+            10017: "TRADE_RETCODE_TRADE_DISABLED - Trade is disabled",
+            10018: "TRADE_RETCODE_MARKET_CLOSED - Market is closed",
+            10019: "TRADE_RETCODE_NO_MONEY - Not enough money to complete the request",
+            10020: "TRADE_RETCODE_PRICE_CHANGED - Prices changed",
+            10021: "TRADE_RETCODE_PRICE_OFF - Prices are off the current prices",
+            10022: "TRADE_RETCODE_INVALID_EXPIRATION - Invalid order expiration date in the request",
+            10023: "TRADE_RETCODE_ORDER_CHANGED - Order state changed",
+            10024: "TRADE_RETCODE_TOO_MANY_REQUESTS - Too frequent requests",
+            10025: "TRADE_RETCODE_NO_CHANGES - No changes in request",
+            10026: "TRADE_RETCODE_SERVER_DISABLES_AT - Auto trading disabled by server",
+            10027: "TRADE_RETCODE_CLIENT_DISABLES_AT - Auto trading disabled by client",
+            10028: "TRADE_RETCODE_LOCKED - Request locked for processing",
+            10029: "TRADE_RETCODE_FROZEN - Order or position frozen",
+            10030: "TRADE_RETCODE_INVALID_FILL - Invalid order filling type",
+            10031: "TRADE_RETCODE_CONNECTION - No connection with the trade server",
+            10032: "TRADE_RETCODE_ONLY_REAL - Operation is allowed only for real accounts",
+            10033: "TRADE_RETCODE_LIMIT_ORDERS - The number of pending orders has reached the limit",
+            10034: "TRADE_RETCODE_LIMIT_VOLUME - The volume of orders and positions for the symbol has reached the limit",
+            10035: "TRADE_RETCODE_INVALID_ORDER - Incorrect or prohibited order type",
+            10036: "TRADE_RETCODE_POSITION_CLOSED - Position with the specified POSITION_IDENTIFIER has already been closed",
+            10037: "TRADE_RETCODE_INVALID_CLOSE_VOLUME - A close volume exceeds the current position volume",
+            10038: "TRADE_RETCODE_CLOSE_ORDER_EXIST - A close order already exists for the position",
+            10039: "TRADE_RETCODE_LIMIT_POSITIONS - The number of open positions has reached the limit",
+            10040: "TRADE_RETCODE_REJECT_CANCEL - The order to cancel the pending order was rejected",
+            10041: "TRADE_RETCODE_LONG_ONLY - The request is rejected because the 'Only long positions are allowed' rule is set for the symbol",
+            10042: "TRADE_RETCODE_SHORT_ONLY - The request is rejected because the 'Only short positions are allowed' rule is set for the symbol",
+            10043: "TRADE_RETCODE_CLOSE_ONLY - The request is rejected because the 'Only position closing is allowed' rule is set for the symbol",
+            10044: "TRADE_RETCODE_FIFO_CLOSE - The request is rejected because 'Position closing is allowed only by FIFO rule' is set for the trading account"
+        }
+        return error_codes.get(retcode, f"Unknown error code: {retcode}")
     
     async def initialize(self) -> bool:
         """Initialize the broker interface."""
@@ -111,6 +157,11 @@ class EnhancedMT5BrokerInterface:
 
             if account_info is None:
                 raise ValueError("Failed to get account info")
+
+            # Log account details for debugging
+            logger.info(f"Account Info: Login={account_info.login}, Balance={account_info.balance}, "
+                       f"Margin={account_info.margin}, Free Margin={account_info.margin_free}")
+
             return {
                 'balance': account_info.balance,
                 'equity': account_info.equity,
@@ -120,6 +171,52 @@ class EnhancedMT5BrokerInterface:
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
             return {'balance': 0.0, 'equity': 0.0, 'margin': 0.0, 'margin_free': 0.0}
+
+    async def check_trading_permissions(self) -> Dict:
+        """Check account trading permissions and symbol availability."""
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Get account info
+            account_info = await loop.run_in_executor(self.executor, self.mt5.account_info)
+
+            # Get terminal info
+            terminal_info = await loop.run_in_executor(self.executor, self.mt5.terminal_info)
+
+            # Check some common symbols
+            symbols_to_check = ['EURUSD', 'GBPUSD', 'USDJPY']
+            symbol_status = {}
+
+            for symbol in symbols_to_check:
+                symbol_info = await loop.run_in_executor(self.executor, self.mt5.symbol_info, symbol)
+                if symbol_info:
+                    symbol_status[symbol] = {
+                        'visible': symbol_info.visible,
+                        'selected': symbol_info.select,
+                        'spread': symbol_info.spread,
+                        'volume_min': getattr(symbol_info, 'volume_min', 0.01),
+                        'trading_enabled': symbol_info.visible and symbol_info.select
+                    }
+                else:
+                    symbol_status[symbol] = {'error': 'Symbol not found'}
+
+            return {
+                'account_info': {
+                    'login': account_info.login if account_info else None,
+                    'balance': account_info.balance if account_info else 0,
+                    'margin': account_info.margin if account_info else 0,
+                    'margin_free': account_info.margin_free if account_info else 0
+                },
+                'terminal_info': {
+                    'connected': terminal_info.connected if terminal_info else False,
+                    'trade_allowed': terminal_info.trade_allowed if terminal_info else False,
+                    'name': terminal_info.name if terminal_info else None
+                },
+                'symbol_status': symbol_status
+            }
+        except Exception as e:
+            logger.error(f"Error checking trading permissions: {e}")
+            return {'error': str(e)}
 
     async def get_positions(self) -> List[Dict]:
         """Get open positions using thread pool."""
@@ -146,35 +243,81 @@ class EnhancedMT5BrokerInterface:
     
     async def place_order(self, symbol: str, order_type: str, volume: float,
                          stop_loss: float = None, take_profit: float = None) -> Dict:
-        """Place an order with enhanced error handling and slippage retries using thread pool."""
+        """Place an order with enhanced error handling and slippage retries using thread pool, with detailed logging."""
         try:
+            logger.info(
+                f"Attempting to place order: symbol={symbol}, volume={volume}, type={order_type}, sl={stop_loss}, tp={take_profit}"
+            )
             loop = asyncio.get_event_loop()
 
-            # Get symbol info in thread pool
+            # Get symbol info and tick in thread pool
             symbol_info = await loop.run_in_executor(self.executor, self.mt5.symbol_info, symbol)
-            if symbol_info is None:
-                raise ValueError(f"Invalid symbol: {symbol}")
+            tick = await loop.run_in_executor(self.executor, self.mt5.symbol_info_tick, symbol)
+            if symbol_info is None or tick is None:
+                logger.error(f"Invalid symbol or tick: {symbol}")
+                # Log additional debugging info
+                logger.error(f"Symbol info: {symbol_info}")
+                logger.error(f"Tick info: {tick}")
+                logger.error(f"MT5 last error: {self.mt5.last_error()}")
+                raise ValueError(f"Invalid symbol or tick: {symbol}")
+
+            # Check if symbol is available for trading
+            if not symbol_info.visible or not symbol_info.select:
+                logger.error(f"Symbol {symbol} is not available for trading")
+                logger.error(f"Symbol visible: {symbol_info.visible}, selected: {symbol_info.select}")
+                raise ValueError(f"Symbol {symbol} is not available for trading")
+
+            # Determine order type and price
+            if order_type.upper() == 'BUY':
+                price = tick.ask
+                order_type_mt5 = self.mt5.ORDER_TYPE_BUY
+            else:
+                price = tick.bid
+                order_type_mt5 = self.mt5.ORDER_TYPE_SELL
+
+            # Ensure volume is above broker minimum
+            min_lot = symbol_info.volume_min if hasattr(symbol_info, 'volume_min') else 0.01
+            if volume < min_lot:
+                logger.error(f"Volume {volume} is below broker minimum {min_lot} for {symbol}")
+                raise ValueError(f"Volume {volume} is below broker minimum {min_lot}")
+
+            # Try different filling types in order of preference
+            # Note: This broker supports IOC but not FOK
+            filling_types = [
+                self.mt5.ORDER_FILLING_IOC,  # Immediate or Cancel (works with this broker)
+                self.mt5.ORDER_FILLING_RETURN,  # Return remaining
+                self.mt5.ORDER_FILLING_FOK  # Fill or Kill (not supported by this broker)
+            ]
 
             order_dict = {
                 'action': self.mt5.TRADE_ACTION_DEAL,
                 'symbol': symbol,
                 'volume': volume,
-                'type': self.mt5.ORDER_TYPE_BUY if order_type.upper() == 'BUY' else self.mt5.ORDER_TYPE_SELL,
-                'price': symbol_info.bid if order_type.upper() == 'BUY' else symbol_info.ask,
-                'sl': stop_loss,
-                'tp': take_profit,
+                'type': order_type_mt5,
+                'price': price,
+                'sl': stop_loss if stop_loss else 0.0,
+                'tp': take_profit if take_profit else 0.0,
                 'deviation': self.max_deviation,
+                'magic': 0,
+                'comment': "AI Bot",
                 'type_time': self.mt5.ORDER_TIME_GTC,
-                'type_filling': self.mt5.ORDER_FILLING_IOC
+                'type_filling': filling_types[0]  # Start with IOC (this broker doesn't support FOK)
             }
 
             for attempt in range(self.max_retries):
-                # Send order in thread pool
-                result = await loop.run_in_executor(self.executor, self.mt5.order_send, order_dict)
+                logger.info(f"Order send attempt {attempt+1} for {symbol}: {order_dict}")
+
+                # Use direct MT5 call (thread pool was causing issues)
+                result = self.mt5.order_send(order_dict)
+                logger.info(f"Order send result for {symbol}: {result}")
+
                 if result is None:
+                    last_error = self.mt5.last_error()
+                    logger.error(f"Order send returned None for {symbol}. MT5 last_error: {last_error}")
                     raise ValueError("Order send failed")
 
                 if result.retcode == self.mt5.TRADE_RETCODE_DONE:
+                    logger.info(f"Order placed successfully for {symbol}: ticket={result.order}")
                     return {
                         'status': OrderResult.SUCCESS.value,
                         'ticket': result.order,
@@ -186,10 +329,11 @@ class EnhancedMT5BrokerInterface:
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(self.retry_delay)
                         # Refresh price in thread pool
-                        fresh_symbol_info = await loop.run_in_executor(self.executor, self.mt5.symbol_info, symbol)
-                        if fresh_symbol_info:
-                            order_dict['price'] = fresh_symbol_info.bid if order_type.upper() == 'BUY' else fresh_symbol_info.ask
+                        fresh_tick = await loop.run_in_executor(self.executor, self.mt5.symbol_info_tick, symbol)
+                        if fresh_tick:
+                            order_dict['price'] = fresh_tick.ask if order_type.upper() == 'BUY' else fresh_tick.bid
                         continue
+                    logger.error(f"Slippage retries exhausted for {symbol}")
                     return {
                         'status': OrderResult.REJECTED.value,
                         'ticket': None,
@@ -197,15 +341,20 @@ class EnhancedMT5BrokerInterface:
                         'comment': 'Slippage retries exhausted'
                     }
                 else:
+                    # Decode MT5 error codes for better debugging
+                    error_description = self._decode_mt5_error(result.retcode)
+                    logger.error(
+                        f"Order failed for {symbol}: retcode={result.retcode} ({error_description}), comment={result.comment}"
+                    )
                     return {
                         'status': OrderResult.FAILED.value,
                         'ticket': None,
                         'retcode': result.retcode,
-                        'comment': result.comment
+                        'comment': f"{result.comment} ({error_description})"
                     }
 
         except Exception as e:
-            logger.error(f"Error placing order for {symbol}: {e}")
+            logger.error(f"Exception during order placement for {symbol}: {e}")
             return {
                 'status': OrderResult.FAILED.value,
                 'ticket': None,
@@ -290,12 +439,13 @@ class EnhancedMT5BrokerInterface:
 
 class BrokerManager:
     """Enhanced broker manager using the new MT5 interface."""
-    
+
     def __init__(self, use_enhanced: bool = True):
         if use_enhanced:
             self.broker = EnhancedMT5BrokerInterface()
         else:
-            self.broker = MT5BrokerInterface()
+            # Fallback to enhanced interface (old MT5BrokerInterface removed)
+            self.broker = EnhancedMT5BrokerInterface()
         self.enhanced = use_enhanced
     
     async def initialize(self) -> bool:
@@ -352,3 +502,7 @@ class BrokerManager:
     async def close_position(self, ticket: int) -> Dict:
         """Close a position."""
         return await self.broker.close_position(ticket)
+
+    async def check_trading_permissions(self) -> Dict:
+        """Check account trading permissions and symbol availability."""
+        return await self.broker.check_trading_permissions()

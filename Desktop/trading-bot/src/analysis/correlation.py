@@ -13,6 +13,38 @@ from ..data.market_data import MarketDataManager
 logger = logging.getLogger(__name__)
 
 
+def calculate_correlation_matrix(returns_dict):
+    """
+    Calculate the correlation matrix for a dictionary of returns.
+    returns_dict: {pair: [returns]}
+    """
+    # Diagnostic: Log available data for each pair
+    for pair, returns in returns_dict.items():
+        logger.info(f"[CORRELATION] {pair}: {len(returns)} return points, sample: {returns[:5]}")
+
+    # Convert to DataFrame if possible
+    import pandas as pd
+    try:
+        returns_df = pd.DataFrame(returns_dict)
+        logger.info(f"[CORRELATION] Returns DataFrame shape: {returns_df.shape}")
+        logger.info(f"[CORRELATION] Returns DataFrame head:\n{returns_df.head()}")
+    except Exception as e:
+        logger.error(f"[CORRELATION] Failed to create returns DataFrame: {e}")
+        return None
+
+    # Calculate correlation matrix
+    try:
+        correlation_matrix = returns_df.corr()
+        if correlation_matrix is None or correlation_matrix.empty:
+            logger.warning("[CORRELATION] Correlation matrix is empty or None after calculation.")
+        else:
+            logger.info(f"[CORRELATION] Correlation matrix calculated:\n{correlation_matrix}")
+        return correlation_matrix
+    except Exception as e:
+        logger.error(f"[CORRELATION] Error calculating correlation matrix: {e}")
+        return None
+
+
 class CorrelationAnalyzer:
     """Analyzes currency pair correlations for hedging opportunities."""
 

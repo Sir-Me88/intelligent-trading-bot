@@ -93,26 +93,26 @@ class MetricsCollector:
         logger.info("Metrics collection stopped")
     
     def record_trade(self, signal: Dict, position_size: float, sentiment_data: Dict):
-        """Record trade metrics."""
-        pair = signal['pair']
-        direction = signal['direction'].value
+        """Record trade metrics. Robust to both enum and string direction types."""
+        pair = signal.get('pair') or signal.get('symbol', 'UNKNOWN')
+        direction = signal.get('direction')
+        # Handle enum or string direction
+        if hasattr(direction, 'value'):
+            direction_value = direction.value
+        else:
+            direction_value = str(direction)
         pattern = signal.get('pattern', {})
-        
         # Record trade count
-        self.trades_total.labels(pair=pair, direction=direction).inc()
-        
+        self.trades_total.labels(pair=pair, direction=direction_value).inc()
         # Record signal execution
         self.signals_executed.labels(pair=pair).inc()
-        
         # Record pattern if available
         if pattern:
             pattern_name = pattern.value if hasattr(pattern, 'value') else str(pattern)
             self.signals_generated.labels(pair=pair, pattern=pattern_name).inc()
-        
         # Record sentiment
         overall_sentiment = sentiment_data.get('overall_sentiment', 0)
         self.sentiment_score.labels(pair=pair).set(overall_sentiment)
-        
         logger.debug(f"Recorded trade metrics for {pair}")
     
     def update_account_metrics(self, account_info: Dict):

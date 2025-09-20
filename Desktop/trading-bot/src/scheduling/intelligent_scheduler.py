@@ -393,3 +393,10 @@ class IntelligentTradingScheduler:
                 'enabled': self.drawdown_check_enabled,
                 'last_check': self.last_drawdown_check.isoformat() if self.last_drawdown_check else None
             }
+
+    async def get_upcoming_events(self, pair):
+        """
+        Stub for news event checking.
+        Returns an empty list for now. Replace with real logic as needed.
+        """
+        return []

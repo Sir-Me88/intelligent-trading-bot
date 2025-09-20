@@ -438,3 +438,36 @@ class TradingMLEngine:
         except Exception as e:
             logger.error(f"Error getting RL action: {e}")
             return None
+
+    def calculate_parameter_adjustments(self, learning_data: Dict) -> Dict:
+        """Calculate parameter adjustments based on learning data."""
+        try:
+            adjustments = {}
+            win_rate = learning_data.get('win_rate', 0.5)
+            profit_factor = learning_data.get('profit_factor', 1.0)
+            confidence_correlation = learning_data.get('confidence_correlation', 0)
+
+            # Adjust confidence threshold based on correlation
+            if confidence_correlation < 0.2:
+                adjustments['min_confidence'] = 0.85  # Raise threshold for weak correlation
+            elif confidence_correlation > 0.6:
+                adjustments['min_confidence'] = 0.75  # Lower threshold for strong correlation
+
+            # Adjust risk/reward ratio based on win rate
+            if win_rate < 0.6:
+                adjustments['min_rr_ratio'] = 2.5  # Higher RR for low win rate
+            elif win_rate > 0.75:
+                adjustments['min_rr_ratio'] = 2.0  # Lower RR for high win rate
+
+            # Adjust ATR multiplier based on profit factor
+            if profit_factor < 1.2:
+                adjustments['atr_multiplier_normal_vol'] = 2.8  # Wider stops for poor PF
+            elif profit_factor > 2.0:
+                adjustments['atr_multiplier_normal_vol'] = 2.2  # Tighter stops for good PF
+
+            logger.info(f"Calculated parameter adjustments: {adjustments}")
+            return adjustments
+
+        except Exception as e:
+            logger.error(f"Error calculating parameter adjustments: {e}")
+            return {}

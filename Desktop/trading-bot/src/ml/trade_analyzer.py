@@ -94,6 +94,53 @@ class TradeAnalyzer:
             logger.error(f"Error generating insights: {e}")
             return {}
     
+    def analyze_trade_performance(self, trades: List[Dict]) -> Dict:
+        """Analyze trade performance and return comprehensive metrics."""
+        try:
+            if not trades:
+                return {'total_trades': 0, 'message': 'No trades to analyze'}
+
+            df = pd.DataFrame(trades)
+
+            # Basic metrics
+            total_trades = len(df)
+            winning_trades = len(df[df['profit'] > 0])
+            losing_trades = len(df[df['profit'] < 0])
+            win_rate = winning_trades / total_trades if total_trades > 0 else 0
+
+            # Profit metrics
+            total_profit = df['profit'].sum()
+            avg_profit = df['profit'].mean()
+            max_profit = df['profit'].max()
+            max_loss = df['profit'].min()
+
+            # Risk metrics
+            profit_factor = abs(df[df['profit'] > 0]['profit'].sum() / df[df['profit'] < 0]['profit'].sum()) if len(df[df['profit'] < 0]) > 0 else float('inf')
+
+            # Performance by pair
+            pair_performance = df.groupby('symbol')['profit'].agg(['sum', 'mean', 'count']).to_dict('index')
+
+            analysis = {
+                'total_trades': total_trades,
+                'winning_trades': winning_trades,
+                'losing_trades': losing_trades,
+                'win_rate': win_rate,
+                'total_profit': total_profit,
+                'avg_profit': avg_profit,
+                'max_profit': max_profit,
+                'max_loss': max_loss,
+                'profit_factor': profit_factor,
+                'pair_performance': pair_performance,
+                'analysis_timestamp': datetime.now().isoformat()
+            }
+
+            logger.info(f"Trade performance analysis complete: {total_trades} trades, {win_rate:.1%} win rate")
+            return analysis
+
+        except Exception as e:
+            logger.error(f"Error analyzing trade performance: {e}")
+            return {'error': str(e), 'total_trades': 0}
+
     def _analyze_news_impact(self, df: pd.DataFrame) -> Dict:
         """Analyze impact of news events on trade performance."""
         try:
